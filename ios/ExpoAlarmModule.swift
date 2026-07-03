@@ -30,6 +30,22 @@ struct IosAlarmOptionsRecord: Record {
   @Field var stopIntentBehavior: String?
   @Field var secondaryButtonBehavior: String?
   @Field var soundName: String?
+  // coloredstone: 잠금화면(알람 제목·버튼 심볼·카운트다운)에 적용되는 틴트 hex("#RRGGBB").
+  // 미지정이면 종전대로 Color.accentColor. iOS26 alert 잠금화면 커스터마이징의 유일한 색 채널이라
+  // 앱의 현재 테마 모드 accent를 실어 브랜드 연속성을 만든다(spec-044C 조사 → spec-045).
+  @Field var tintColorHex: String?
+}
+
+// coloredstone: "#RRGGBB" hex → SwiftUI Color. 파싱 실패 시 nil(호출부가 accentColor 폴백).
+private func colorFromHex(_ hex: String?) -> Color? {
+  guard let hex else { return nil }
+  var cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+  if cleaned.hasPrefix("#") { cleaned.removeFirst() }
+  guard cleaned.count == 6, let value = UInt64(cleaned, radix: 16) else { return nil }
+  let red = Double((value >> 16) & 0xFF) / 255.0
+  let green = Double((value >> 8) & 0xFF) / 255.0
+  let blue = Double(value & 0xFF) / 255.0
+  return Color(red: red, green: green, blue: blue)
 }
 
 private enum ExpoAlarmNativeAlarmStore {
@@ -960,7 +976,9 @@ public class ExpoAlarmModule: Module {
     let attributes = AlarmAttributes(
       presentation: presentation,
       metadata: ExpoAlarmMetadata(alarmId: id, title: title, values: alarmKitMetadataValues(metadata)),
-      tintColor: Color.accentColor
+      // coloredstone: 앱의 현재 테마 모드 accent를 잠금화면 틴트로(미지정·파싱 실패 시 종전 accentColor).
+      // 백업알람(scheduleBackup)은 stop intent 경유라 JS 색이 안 닿아 accentColor 유지.
+      tintColor: colorFromHex(options?.tintColorHex) ?? Color.accentColor
     )
     let schedule = try makeAlarmKitSchedule(hour: hour, minute: minute, weekdays: weekdays)
     let soundName = normalizedSoundName(options?.soundName)
