@@ -681,6 +681,17 @@ public class ExpoAlarmModule: Module {
     ]
     if let storedAlarm = storedAlarms().first(where: { ($0["id"] as? String) == alarm.id.uuidString }) {
       event["metadata"] = storedAlarm["metadata"]
+    } else if let original = ExpoAlarmRescheduler.backupAlarmId(for: alarm.id.uuidString),
+              let storedOriginal = storedAlarms().first(where: {
+                ($0["id"] as? String) == original.uuidString
+              }) {
+      // coloredstone: rescheduleImmediate 백업알람은 XOR(0xA7) 마스킹된 새 UUID로 울린다.
+      // storedAlarms엔 원본만 있으므로 마스킹을 한 번 더 적용해(자기역원) 원본 UUID를 복원하고,
+      // 원본 alarmId와 metadata를 이벤트에 실어 JS가 원래 알람의 미션을 인계하게 한다.
+      // 오탐 안전: 일반 알람은 위 직접 매치에서 잡히고, 임의 UUID의 언마스킹 결과가 store에
+      // 존재할 확률은 사실상 0이라 이 분기는 백업알람에서만 발동한다.
+      event["originalAlarmId"] = original.uuidString
+      event["metadata"] = storedOriginal["metadata"]
     }
     sendEvent("onAlarmStateChange", event)
   }
