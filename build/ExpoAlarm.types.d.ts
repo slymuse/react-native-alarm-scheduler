@@ -23,6 +23,11 @@ export type IosAlarmOptions = {
     stopIntentBehavior?: "recordOnly" | "openApp" | "rescheduleImmediate";
     secondaryButtonBehavior?: "openApp" | "recordOnly" | "none";
     soundName?: string;
+  // coloredstone(spec-045): 잠금화면 틴트 hex(현재 테마 모드 accent). 미지정=시스템 accentColor.
+  tintColorHex?: string;
+  // coloredstone(spec-045): 지정 시 고정시각 대신 카운트다운형(timer) 예약 — countdown 상태가
+  // 생겨 잠금화면/Dynamic Island Live Activity가 노출된다(스누즈 대기 화면 경로).
+  countdownDurationSeconds?: number;
 };
 export type AlarmActionType = "nativeStop" | "secondaryOpen" | "snooze" | "dismiss";
 export type AlarmAction = {
@@ -69,6 +74,7 @@ export type AlarmStateChange = {
     id: string;
     state: AlarmContextState;
     timestamp: number;
+    originalAlarmId?: string;
     metadata?: AlarmMetadata;
 };
 export type NativeAlarmDebugState = {

@@ -34,6 +34,11 @@ export type IosAlarmOptions = {
   stopIntentBehavior?: "recordOnly" | "openApp" | "rescheduleImmediate";
   secondaryButtonBehavior?: "openApp" | "recordOnly" | "none";
   soundName?: string;
+  // coloredstone(spec-045): 잠금화면 틴트 hex(현재 테마 모드 accent). 미지정=시스템 accentColor.
+  tintColorHex?: string;
+  // coloredstone(spec-045): 지정 시 고정시각 대신 카운트다운형(timer) 예약 — countdown 상태가
+  // 생겨 잠금화면/Dynamic Island Live Activity가 노출된다(스누즈 대기 화면 경로).
+  countdownDurationSeconds?: number;
 };
 
 export type AlarmActionType =
@@ -95,6 +100,9 @@ export type AlarmStateChange = {
   id: string;
   state: AlarmContextState;
   timestamp: number;
+  // coloredstone(P0 후속③): 백업알람(rescheduleImmediate, 마스킹 UUID)일 때 네이티브가 복원해
+  // 실어주는 원본 alarmId. JS는 이것을 우선 사용해 원래 알람의 미션을 인계한다.
+  originalAlarmId?: string;
   metadata?: AlarmMetadata;
 };
 
