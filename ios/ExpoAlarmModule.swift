@@ -34,6 +34,10 @@ struct IosAlarmOptionsRecord: Record {
   // 미지정이면 종전대로 Color.accentColor. iOS26 alert 잠금화면 커스터마이징의 유일한 색 채널이라
   // 앱의 현재 테마 모드 accent를 실어 브랜드 연속성을 만든다(spec-044C 조사 → spec-045).
   @Field var tintColorHex: String?
+  // coloredstone(spec-045): 지정 시 고정시각(schedule) 대신 카운트다운형(timer) 예약.
+  // AlarmKit countdown 상태가 생겨 잠금화면·Dynamic Island에 Live Activity가 노출된다 —
+  // 스누즈 대기 화면의 노출 경로. hour/minute은 무시된다(호출부 JS가 스누즈에서만 사용).
+  @Field var countdownDurationSeconds: Double?
 }
 
 // coloredstone: "#RRGGBB" hex → SwiftUI Color. 파싱 실패 시 nil(호출부가 accentColor 폴백).
@@ -189,46 +193,13 @@ private enum ExpoAlarmNativeAlarmStore {
 }
 
 #if canImport(AlarmKit)
-@available(iOS 26.0, *)
-private struct ExpoAlarmMetadata: AlarmMetadata {
-  let alarmId: String
-  let title: String
-  let values: [String: ExpoAlarmMetadataValue]
-}
+// coloredstone(spec-045): ExpoAlarmMetadata / ExpoAlarmMetadataValue는 Widget Extension과
+// 공유하기 위해 ExpoAlarmSharedTypes.swift로 분리·public화됨.
 
 @available(iOS 26.0, *)
 private struct ExpoAlarmAlertPresentationResult {
   let alert: AlarmPresentation.Alert
   let debugState: [String: Any]
-}
-
-private enum ExpoAlarmMetadataValue: Codable, Hashable, Sendable {
-  case string(String)
-  case number(Double)
-  case bool(Bool)
-
-  init(from decoder: Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    if let value = try? container.decode(Bool.self) {
-      self = .bool(value)
-    } else if let value = try? container.decode(Double.self) {
-      self = .number(value)
-    } else {
-      self = .string(try container.decode(String.self))
-    }
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.singleValueContainer()
-    switch self {
-    case .string(let value):
-      try container.encode(value)
-    case .number(let value):
-      try container.encode(value)
-    case .bool(let value):
-      try container.encode(value)
-    }
-  }
 }
 
 @available(iOS 26.0, *)
@@ -992,16 +963,31 @@ public class ExpoAlarmModule: Module {
       soundName: soundName
     )
     let secondaryIntent = makeSecondaryIntent(id: id, behavior: options?.secondaryButtonBehavior)
-    _ = try await AlarmManager.shared.schedule(
-      id: alarmID,
-      configuration: AlarmManager.AlarmConfiguration.alarm(
-        schedule: schedule,
-        attributes: attributes,
-        stopIntent: stopIntent,
-        secondaryIntent: secondaryIntent,
-        sound: makeAlarmSound(soundName)
+    // coloredstone(spec-045): countdownDurationSeconds 지정 시 timer 구성 — countdown 상태가
+    // 생겨 LA(잠금화면·Dynamic Island)가 노출된다. 그 외엔 종전 고정시각(alarm) 구성 그대로.
+    if let countdownSeconds = options?.countdownDurationSeconds, countdownSeconds > 0 {
+      _ = try await AlarmManager.shared.schedule(
+        id: alarmID,
+        configuration: AlarmManager.AlarmConfiguration.timer(
+          duration: countdownSeconds,
+          attributes: attributes,
+          stopIntent: stopIntent,
+          secondaryIntent: secondaryIntent,
+          sound: makeAlarmSound(soundName)
+        )
       )
-    )
+    } else {
+      _ = try await AlarmManager.shared.schedule(
+        id: alarmID,
+        configuration: AlarmManager.AlarmConfiguration.alarm(
+          schedule: schedule,
+          attributes: attributes,
+          stopIntent: stopIntent,
+          secondaryIntent: secondaryIntent,
+          sound: makeAlarmSound(soundName)
+        )
+      )
+    }
     var debugState = alertPresentation.debugState
     debugState["sound"] = soundName == nil ? "default" : "named"
     if let soundName {
