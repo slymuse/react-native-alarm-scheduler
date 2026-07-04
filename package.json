@@ -12,6 +12,7 @@
     "expo-module.config.json",
     "ios/ExpoAlarm.podspec",
     "ios/ExpoAlarmModule.swift",
+    "ios/ExpoAlarmSharedTypes.swift",
     "src",
     "CHANGELOG.md",
     "README.md"
