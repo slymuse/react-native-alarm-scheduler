@@ -40,6 +40,14 @@ struct IosAlarmOptionsRecord: Record {
   // AlarmKit countdown 상태가 생겨 잠금화면·Dynamic Island에 Live Activity가 노출된다 —
   // 스누즈 대기 화면의 노출 경로. hour/minute은 무시된다(호출부 JS가 스누즈에서만 사용).
   @Field var countdownDurationSeconds: Double?
+  // coloredstone(spec-057): 잠금 스누즈 — stopIntentBehavior "snoozeReschedule"와 함께 사용.
+  //   snoozeDurationSeconds 지정 시 stop 인텐트가 ExpoAlarmSnoozeIntent(5분 재울림 예약)로 교체.
+  @Field var snoozeDurationSeconds: Double?
+  @Field var snoozeWakeButtonTitle: String?
+  @Field var snoozeCountdownTitle: String?
+  @Field var snoozeLaPhrase: String?
+  @Field var snoozeLaAccentHex: String?
+  @Field var snoozeLaModeName: String?
 }
 
 // coloredstone: "#RRGGBB" hex → SwiftUI Color. 파싱 실패 시 nil(호출부가 accentColor 폴백).
@@ -86,6 +94,25 @@ private enum ExpoAlarmNativeAlarmStore {
     UserDefaults.standard.set(actions, forKey: actionsKey)
     NotificationCenter.default.post(name: actionRecordedNotification, object: nil, userInfo: event)
     return event
+  }
+
+  // coloredstone(spec-057): 잠금 스누즈 1회 게이트(SNOOZE_LIMIT=1)의 네이티브 축.
+  //   markSnoozeUsed = 스누즈 인텐트 성공 시 / isSnoozeUsed = 인텐트 이중 게이트 /
+  //   clearSnoozeUsed = 완전해제(completeNativeAlarm) 시 사이클 종료로 리셋.
+  private static func snoozeUsedKey(alarmId: String) -> String {
+    return "expoAlarm.snoozeUsed.\(alarmId)"
+  }
+
+  static func markSnoozeUsed(alarmId: String) {
+    UserDefaults.standard.set(true, forKey: snoozeUsedKey(alarmId: alarmId))
+  }
+
+  static func isSnoozeUsed(alarmId: String) -> Bool {
+    return UserDefaults.standard.bool(forKey: snoozeUsedKey(alarmId: alarmId))
+  }
+
+  static func clearSnoozeUsed(alarmId: String) {
+    UserDefaults.standard.removeObject(forKey: snoozeUsedKey(alarmId: alarmId))
   }
 
   static func recordIntentHandoff(
@@ -272,6 +299,126 @@ struct ExpoAlarmStopIntent: LiveActivityIntent {
 }
 
 @available(iOS 26.0, *)
+struct ExpoAlarmSnoozeIntent: LiveActivityIntent {
+  // coloredstone(spec-057) — 잠금화면 '5분 미루기'(primary/슬라이드 자리). ★앱을 열지 않는다★
+  //   (background) — 링 정지는 AlarmKit(stop 버튼)이 수행하고, 이 인텐트는 후처리로
+  //   ①5분 카운트다운 재울림 예약 ②성공 시 스누즈 사용 마킹(SNOOZE_LIMIT 네이티브 축)
+  //   ③JS 핸드오프(action:"snooze") 기록.
+  //   ★예약확정후정지 대체(불변식): iOS가 링을 먼저 멈추므로 '실패 시 계속 울림'이 물리적으로
+  //   불가 — 재예약 실패(또는 이중 게이트 발동) 시 즉시 백업(rescheduleImmediate 0.1s)으로
+  //   폴백해 사실상 끊기지 않는 울림을 보장한다(무음 아침 0).★
+  static var title: LocalizedStringResource = "Snooze Alarm"
+  static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+  static var supportedModes: IntentModes { .background }
+
+  @Parameter(title: "Alarm ID")
+  var alarmId: String
+  @Parameter(title: "Title")
+  var alarmTitle: String
+  @Parameter(title: "Duration Seconds")
+  var durationSeconds: Double
+  @Parameter(title: "Wake Button Title")
+  var wakeButtonTitle: String
+  @Parameter(title: "Countdown Title")
+  var countdownTitle: String
+  @Parameter(title: "Sound Name")
+  var soundName: String
+  @Parameter(title: "LA Phrase")
+  var laPhrase: String
+  @Parameter(title: "LA Accent Hex")
+  var laAccentHex: String
+  @Parameter(title: "LA Mode Name")
+  var laModeName: String
+
+  init() {
+    alarmId = ""
+    alarmTitle = "Alarm"
+    durationSeconds = 300
+    wakeButtonTitle = "Wake up"
+    countdownTitle = "Snoozed"
+    soundName = ""
+    laPhrase = ""
+    laAccentHex = ""
+    laModeName = ""
+  }
+
+  init(
+    alarmId: String,
+    title: String,
+    durationSeconds: Double,
+    wakeButtonTitle: String,
+    countdownTitle: String,
+    soundName: String?,
+    laPhrase: String,
+    laAccentHex: String,
+    laModeName: String
+  ) {
+    self.alarmId = alarmId
+    self.alarmTitle = title
+    self.durationSeconds = durationSeconds
+    self.wakeButtonTitle = wakeButtonTitle
+    self.countdownTitle = countdownTitle
+    self.soundName = soundName ?? ""
+    self.laPhrase = laPhrase
+    self.laAccentHex = laAccentHex
+    self.laModeName = laModeName
+  }
+
+  func perform() async throws -> some IntentResult {
+    var details: [String: Any] = [:]
+    // 이중 게이트(SNOOZE_LIMIT=1) — 이미 사용됐는데 버튼이 남은 엣지: 스누즈 대신 즉시 백업으로
+    //   폴백(링이 사실상 계속 울림 — 조용히 꺼지는 최악 방지).
+    if ExpoAlarmNativeAlarmStore.isSnoozeUsed(alarmId: alarmId) {
+      let backup = await ExpoAlarmRescheduler.scheduleBackup(
+        originalAlarmId: alarmId,
+        title: alarmTitle,
+        soundName: soundName.isEmpty ? nil : soundName,
+        delaySeconds: ExpoAlarmRescheduler.defaultBackupDelaySeconds
+      )
+      details["snoozeSkipped"] = true
+      details["rescheduled"] = backup.scheduled
+      details["backupAlarmId"] = backup.backupAlarmId
+      _ = ExpoAlarmNativeAlarmStore.recordIntentHandoff(alarmId: alarmId, action: "snooze", details: details)
+      return .result()
+    }
+
+    let result = await ExpoAlarmRescheduler.scheduleSnoozeReschedule(
+      originalAlarmId: alarmId,
+      title: alarmTitle,
+      durationSeconds: durationSeconds,
+      wakeButtonTitle: wakeButtonTitle,
+      countdownTitle: countdownTitle,
+      soundName: soundName.isEmpty ? nil : soundName,
+      laPhrase: laPhrase,
+      laAccentHex: laAccentHex,
+      laModeName: laModeName
+    )
+    details["snoozeScheduled"] = result.scheduled
+    details["snoozeAlarmId"] = result.backupAlarmId
+    details["snoozeDurationSeconds"] = result.delaySeconds
+    if let scheduledFor = result.scheduledFor {
+      details["snoozeScheduledFor"] = scheduledFor
+    }
+    if result.scheduled {
+      ExpoAlarmNativeAlarmStore.markSnoozeUsed(alarmId: alarmId)
+    } else {
+      // 재예약 실패 — 즉시 백업 폴백(끊기지 않는 울림 = 각성 보장).
+      let backup = await ExpoAlarmRescheduler.scheduleBackup(
+        originalAlarmId: alarmId,
+        title: alarmTitle,
+        soundName: soundName.isEmpty ? nil : soundName,
+        delaySeconds: ExpoAlarmRescheduler.defaultBackupDelaySeconds
+      )
+      details["snoozeFailed"] = true
+      details["rescheduled"] = backup.scheduled
+      details["backupAlarmId"] = backup.backupAlarmId
+    }
+    _ = ExpoAlarmNativeAlarmStore.recordIntentHandoff(alarmId: alarmId, action: "snooze", details: details)
+    return .result()
+  }
+}
+
+@available(iOS 26.0, *)
 struct ExpoAlarmSecondaryOpenIntent: LiveActivityIntent {
   static var title: LocalizedStringResource = "Open Alarm"
   static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
@@ -350,6 +497,35 @@ private enum ExpoAlarmRescheduler {
       .filter { (1...7).contains($0) }
   }
 
+  // coloredstone(spec-057): 잠금 스누즈 재울림 알람의 마스킹 UUID(XOR 0x53, 자기역원).
+  //   백업(0xA7)과 다른 마스크라 충돌 없음. 언마스킹 복원은 onAlarmStateChange 분기.
+  static func snoozeAlarmId(for alarmId: String) -> UUID? {
+    guard let primary = UUID(uuidString: alarmId) else {
+      return nil
+    }
+    let mask: UInt8 = 0x53
+    let bytes = primary.uuid
+    let snoozeBytes = uuid_t(
+      bytes.0 ^ mask,
+      bytes.1 ^ mask,
+      bytes.2 ^ mask,
+      bytes.3 ^ mask,
+      bytes.4 ^ mask,
+      bytes.5 ^ mask,
+      bytes.6 ^ mask,
+      bytes.7 ^ mask,
+      bytes.8 ^ mask,
+      bytes.9 ^ mask,
+      bytes.10 ^ mask,
+      bytes.11 ^ mask,
+      bytes.12 ^ mask,
+      bytes.13 ^ mask,
+      bytes.14 ^ mask,
+      bytes.15 ^ mask
+    )
+    return UUID(uuid: snoozeBytes)
+  }
+
   static func backupAlarmId(for alarmId: String) -> UUID? {
     guard let primary = UUID(uuidString: alarmId) else {
       return nil
@@ -375,6 +551,105 @@ private enum ExpoAlarmRescheduler {
       bytes.15 ^ mask
     )
     return UUID(uuid: backupBytes)
+  }
+
+  // coloredstone(spec-057): 잠금 스누즈 — 5분 카운트다운 재울림 예약. timer 구성이라
+  //   countdown 상태가 생겨 잠금화면/Dynamic Island LA(spec-045)가 자동 노출된다.
+  //   재울림 프레젠테이션 = stop("일어나기") 단독 + rescheduleImmediate 인텐트(anti-bail 복귀,
+  //   foreground로 앱 열려 미션 인계) — ★스누즈 ≠ 해제: 재울림엔 스누즈 액션 미부착★.
+  static func scheduleSnoozeReschedule(
+    originalAlarmId: String,
+    title: String,
+    durationSeconds: Double,
+    wakeButtonTitle: String,
+    countdownTitle: String,
+    soundName: String?,
+    laPhrase: String,
+    laAccentHex: String,
+    laModeName: String
+  ) async -> ExpoAlarmBackupScheduleResult {
+    let normalizedDuration = max(1, durationSeconds)
+    guard let alarmID = snoozeAlarmId(for: originalAlarmId) else {
+      return ExpoAlarmBackupScheduleResult(
+        alarmId: originalAlarmId,
+        backupAlarmId: "",
+        scheduled: false,
+        scheduledFor: nil,
+        delaySeconds: normalizedDuration
+      )
+    }
+    let snoozeIdString = alarmID.uuidString
+    let scheduledFor = Int64(Date().addingTimeInterval(normalizedDuration).timeIntervalSince1970 * 1000)
+    do {
+      try? AlarmManager.shared.cancel(id: alarmID)
+      var values: [String: ExpoAlarmMetadataValue] = [
+        "alarmId": .string(originalAlarmId),
+        "title": .string(title),
+        "snoozeAlarmId": .string(snoozeIdString),
+        "isSnoozeAlarm": .bool(true)
+      ]
+      // spec-045 LA 데이터 계약(phrase/accentHex/modeName) — 스케줄 시점에 인텐트 파라미터로
+      //   구워 둔 값을 그대로 전달(미전달이면 위젯이 폴백 카피).
+      if !laPhrase.isEmpty { values["phrase"] = .string(laPhrase) }
+      if !laAccentHex.isEmpty { values["accentHex"] = .string(laAccentHex) }
+      if !laModeName.isEmpty { values["modeName"] = .string(laModeName) }
+      let presentation = AlarmPresentation(
+        alert: AlarmPresentation.Alert(
+          title: LocalizedStringResource(stringLiteral: title),
+          stopButton: AlarmButton(
+            text: LocalizedStringResource(stringLiteral: wakeButtonTitle),
+            textColor: .white,
+            systemImageName: "sun.max.fill"
+          )
+        ),
+        countdown: AlarmPresentation.Countdown(
+          title: LocalizedStringResource(stringLiteral: countdownTitle)
+        )
+      )
+      let metadata = ExpoAlarmMetadata(
+        alarmId: originalAlarmId,
+        title: title,
+        values: values
+      )
+      let attributes = AlarmAttributes(
+        presentation: presentation,
+        metadata: metadata,
+        tintColor: Color.accentColor
+      )
+      _ = try await AlarmManager.shared.schedule(
+        id: alarmID,
+        configuration: AlarmManager.AlarmConfiguration.timer(
+          duration: normalizedDuration,
+          attributes: attributes,
+          stopIntent: ExpoAlarmStopIntent(
+            alarmId: originalAlarmId,
+            behavior: "rescheduleImmediate",
+            title: title,
+            hour: 0,
+            minute: 0,
+            weekdays: [],
+            soundName: soundName
+          ),
+          secondaryIntent: nil,
+          sound: makeAlarmSound(soundName)
+        )
+      )
+      return ExpoAlarmBackupScheduleResult(
+        alarmId: originalAlarmId,
+        backupAlarmId: snoozeIdString,
+        scheduled: true,
+        scheduledFor: scheduledFor,
+        delaySeconds: normalizedDuration
+      )
+    } catch {
+      return ExpoAlarmBackupScheduleResult(
+        alarmId: originalAlarmId,
+        backupAlarmId: snoozeIdString,
+        scheduled: false,
+        scheduledFor: nil,
+        delaySeconds: normalizedDuration
+      )
+    }
   }
 
   static func scheduleBackup(
@@ -745,6 +1020,16 @@ public class ExpoAlarmModule: Module {
       // 존재할 확률은 사실상 0이라 이 분기는 백업알람에서만 발동한다.
       event["originalAlarmId"] = original.uuidString
       event["metadata"] = storedOriginal["metadata"]
+    } else if let original = ExpoAlarmRescheduler.snoozeAlarmId(for: alarm.id.uuidString),
+              let storedOriginal = storedAlarms().first(where: {
+                ($0["id"] as? String) == original.uuidString
+              }) {
+      // coloredstone(spec-057): 잠금 스누즈 재울림 알람은 XOR(0x53) 마스킹 UUID로 울린다.
+      // 백업(0xA7)과 동일 자기역원 복원 — 원본 alarmId와 metadata를 실어 JS가 원래 알람의
+      // 미션을 인계하게 한다(재울림 = 미션 필수, 스누즈 != 해제).
+      event["originalAlarmId"] = original.uuidString
+      event["metadata"] = storedOriginal["metadata"]
+      event["isSnoozeRing"] = true
     }
     sendEvent("onAlarmStateChange", event)
   }
@@ -852,6 +1137,12 @@ public class ExpoAlarmModule: Module {
       if let backupId = ExpoAlarmRescheduler.backupAlarmId(for: originalAlarmId) {
         try? AlarmManager.shared.cancel(id: backupId)
       }
+      // coloredstone(spec-057): 완전해제는 잠금 스누즈 재울림(0x53)도 함께 정리 + 스누즈 사용
+      //   마킹 리셋(사이클 종료 — 다음 알람에서 '5분 미루기' 재제공).
+      if let snoozeId = ExpoAlarmRescheduler.snoozeAlarmId(for: originalAlarmId) {
+        try? AlarmManager.shared.cancel(id: snoozeId)
+      }
+      ExpoAlarmNativeAlarmStore.clearSnoozeUsed(alarmId: originalAlarmId)
       for retryAlarmId in ExpoAlarmNativeAlarmStore.retryAlarmIds(for: originalAlarmId) {
         guard let uuid = UUID(uuidString: retryAlarmId) else {
           continue
@@ -1026,7 +1317,8 @@ public class ExpoAlarmModule: Module {
       minute: minute,
       weekdays: weekdays,
       behavior: normalizeStopIntentBehavior(options?.stopIntentBehavior),
-      soundName: soundName
+      soundName: soundName,
+      snoozeOptions: options
     )
     let secondaryIntent = makeSecondaryIntent(id: id, behavior: options?.secondaryButtonBehavior)
     // coloredstone(spec-045): countdownDurationSeconds 지정 시 timer 구성 — countdown 상태가
@@ -1124,7 +1416,7 @@ public class ExpoAlarmModule: Module {
   @available(iOS 26.0, *)
   private func normalizeStopIntentBehavior(_ behavior: String?) -> String {
     switch behavior ?? "recordOnly" {
-    case "recordOnly", "openApp", "rescheduleImmediate":
+    case "recordOnly", "openApp", "rescheduleImmediate", "snoozeReschedule":
       return behavior ?? "recordOnly"
     default:
       return "recordOnly"
@@ -1155,7 +1447,8 @@ public class ExpoAlarmModule: Module {
     minute: Int,
     weekdays: [Int],
     behavior: String?,
-    soundName: String?
+    soundName: String?,
+    snoozeOptions: IosAlarmOptionsRecord?
   ) -> (any LiveActivityIntent)? {
     switch behavior ?? "recordOnly" {
     case "recordOnly", "openApp", "rescheduleImmediate":
@@ -1167,6 +1460,19 @@ public class ExpoAlarmModule: Module {
         minute: minute,
         weekdays: weekdays,
         soundName: soundName
+      )
+    case "snoozeReschedule":
+      // coloredstone(spec-057) — stop(밀어서/primary) 자리를 '5분 미루기' 스누즈로.
+      return ExpoAlarmSnoozeIntent(
+        alarmId: id,
+        title: title,
+        durationSeconds: snoozeOptions?.snoozeDurationSeconds ?? 300,
+        wakeButtonTitle: snoozeOptions?.snoozeWakeButtonTitle ?? "Wake up",
+        countdownTitle: snoozeOptions?.snoozeCountdownTitle ?? "Snoozed",
+        soundName: soundName,
+        laPhrase: snoozeOptions?.snoozeLaPhrase ?? "",
+        laAccentHex: snoozeOptions?.snoozeLaAccentHex ?? "",
+        laModeName: snoozeOptions?.snoozeLaModeName ?? ""
       )
     default:
       return nil
