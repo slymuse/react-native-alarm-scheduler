@@ -1,5 +1,7 @@
+import AVFoundation
 import ExpoModulesCore
 import Foundation
+import MediaPlayer
 import UIKit
 
 #if canImport(AlarmKit)
@@ -466,6 +468,58 @@ private enum ExpoAlarmRescheduler {
 }
 #endif
 
+// coloredstone(build23) — 시스템 미디어(출력) 볼륨 읽기/쓰기.
+//   읽기 = AVAudioSession.outputVolume(공식 읽기 전용 프로퍼티).
+//   쓰기 = 숨김 MPVolumeView 슬라이더 setValue — iOS의 유일한 공개 쓰기 경로(알람앱 표준 기법).
+//   뷰는 오프스크린(+alpha 0.01)으로 keyWindow에 1회 attach해 재사용한다. isHidden=true는
+//   일부 iOS에서 슬라이더가 동작하지 않아 쓰지 않는다. attach 직후엔 반영이 안 될 수 있어
+//   소딜레이 + 검증 재시도(최대 3회)로 확정한다.
+@MainActor
+private final class ColoredstoneSystemVolume {
+  static let shared = ColoredstoneSystemVolume()
+  private var volumeView: MPVolumeView?
+
+  private func ensureVolumeView() -> MPVolumeView {
+    if let view = volumeView, view.window != nil {
+      return view
+    }
+    let view = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
+    view.alpha = 0.01
+    let window = UIApplication.shared.connectedScenes
+      .compactMap { $0 as? UIWindowScene }
+      .flatMap { $0.windows }
+      .first { $0.isKeyWindow }
+      ?? UIApplication.shared.connectedScenes
+        .compactMap { ($0 as? UIWindowScene)?.windows.first }
+        .first
+    window?.addSubview(view)
+    volumeView = view
+    return view
+  }
+
+  func currentVolume() -> Float {
+    return AVAudioSession.sharedInstance().outputVolume
+  }
+
+  func setVolume(_ value: Float) async -> Bool {
+    let clamped = min(1, max(0, value))
+    let view = ensureVolumeView()
+    guard let slider = view.subviews.compactMap({ $0 as? UISlider }).first else {
+      return false
+    }
+    for attempt in 0..<3 {
+      try? await Task.sleep(nanoseconds: attempt == 0 ? 100_000_000 : 250_000_000)
+      slider.setValue(clamped, animated: false)
+      slider.sendActions(for: .valueChanged)
+      try? await Task.sleep(nanoseconds: 100_000_000)
+      if abs(AVAudioSession.sharedInstance().outputVolume - clamped) < 0.05 {
+        return true
+      }
+    }
+    return abs(AVAudioSession.sharedInstance().outputVolume - clamped) < 0.05
+  }
+}
+
 public class ExpoAlarmModule: Module {
   private var alarmActionObserver: NSObjectProtocol?
   private var alarmUpdatesTask: Task<Void, Never>?
@@ -557,6 +611,18 @@ public class ExpoAlarmModule: Module {
 
     AsyncFunction("resetNativeAlarmCompletionAsync") { (alarmId: String) -> Void in
       ExpoAlarmNativeAlarmStore.resetCompletion(alarmId: alarmId)
+    }
+
+    // coloredstone(build23) — 시스템 출력 볼륨 읽기(미션 진입 전 저장용).
+    AsyncFunction("getSystemOutputVolumeAsync") { () async -> Double in
+      return Double(await ColoredstoneSystemVolume.shared.currentVolume())
+    }
+
+    // coloredstone(build23) — 시스템 출력 볼륨 쓰기(미션 진입 시 상향·종료 시 복원).
+    //   반환 = 목표치 반영 확인 여부(±0.05). 실패해도 throw하지 않는다(볼륨은 부가 —
+    //   알람/미션 흐름을 절대 막지 않는다).
+    AsyncFunction("setSystemOutputVolumeAsync") { (value: Double) async -> Bool in
+      return await ColoredstoneSystemVolume.shared.setVolume(Float(value))
     }
 
     AsyncFunction("getNativeAlarmDebugStateAsync") { (alarmId: String) -> [String: Any] in
