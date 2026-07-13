@@ -32,19 +32,22 @@ export type IosAlarmOptions = {
   secondaryButtonTitle?: string;
   countdownTitle?: string;
   stopIntentBehavior?: "recordOnly" | "openApp" | "rescheduleImmediate";
-  secondaryButtonBehavior?: "openApp" | "recordOnly" | "none";
+  // coloredstone(spec-057 rev2): "countdown" = secondary 탭이 iOS 네이티브 스누즈(시스템
+  // 카운트다운 전환). snoozeDurationSeconds와 항상 쌍으로 보낸다.
+  secondaryButtonBehavior?: "openApp" | "recordOnly" | "none" | "countdown";
   soundName?: string;
   // coloredstone(spec-045): 잠금화면 틴트 hex(현재 테마 모드 accent). 미지정=시스템 accentColor.
   tintColorHex?: string;
   // coloredstone(spec-045): 지정 시 고정시각 대신 카운트다운형(timer) 예약 — countdown 상태가
   // 생겨 잠금화면/Dynamic Island Live Activity가 노출된다(스누즈 대기 화면 경로).
   countdownDurationSeconds?: number;
+  // coloredstone(spec-057 rev2): 네이티브 스누즈 길이(postAlert 초). "countdown" behavior와 쌍.
+  snoozeDurationSeconds?: number;
 };
 
 export type AlarmActionType =
   | "nativeStop"
   | "secondaryOpen"
-  | "snooze"
   | "dismiss";
 
 export type AlarmAction = {
@@ -117,12 +120,14 @@ export type NativeAlarmDebugState = {
   alertActionMode?: "default" | "openMissionOnly";
   stopButtonIncluded?: boolean;
   secondaryButtonIncluded?: boolean;
-  secondaryButtonBehavior?: "openApp" | "recordOnly" | "none";
+  secondaryButtonBehavior?: "openApp" | "recordOnly" | "none" | "countdown";
   stopIntentBehavior?: "recordOnly" | "openApp" | "rescheduleImmediate";
   alertInitializer?: "secondaryOnly" | "legacyStopButton";
   runtimeSupportsSecondaryOnlyAlert?: boolean;
   sound?: "default" | "named";
   soundName?: string;
+  // coloredstone(spec-057 rev2): 네이티브 스누즈 구성 시 postAlert 초(debugState 정직 노출).
+  snoozeCountdownSeconds?: number;
 };
 
 export type NativeAlarmBackupResult = {
