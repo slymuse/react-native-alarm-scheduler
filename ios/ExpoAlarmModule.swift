@@ -1135,7 +1135,13 @@ public class ExpoAlarmModule: Module {
     } else {
       runtimeSupportsSecondaryOnlyAlert = false
     }
-    let shouldUseSecondaryOnly = alertActionMode == "openMissionOnly" && runtimeSupportsSecondaryOnlyAlert
+    // coloredstone(spec-057 rev2 build26): 26.1에서 legacy init(stopButton 포함)는 deprecated
+    // ("stopButton is deprecated and will no longer be used")이고 실기기에서 커스텀 버튼을
+    // 렌더하지 않는다(build24·25 실증 — 시스템 슬라이더만 표시). secondary 버튼이 있으면
+    // alertActionMode와 무관하게 신형 init(title:secondaryButton:behavior:)를 쓴다 —
+    // stop은 시스템 슬라이더('밀어서 중단', 라벨 제어 불가)가 담당하고 configuration.stopIntent에
+    // 그대로 연결된다(openMissionOnly 빌드들에서 기실증). 26.0은 legacy 유지(stopButton 유효).
+    let shouldUseSecondaryOnly = secondaryButton != nil && runtimeSupportsSecondaryOnlyAlert
     let debugState: [String: Any] = [
       "alertActionMode": alertActionMode,
       "stopButtonIncluded": !shouldUseSecondaryOnly,
@@ -1145,7 +1151,7 @@ public class ExpoAlarmModule: Module {
       "alertInitializer": shouldUseSecondaryOnly ? "secondaryOnly" : "legacyStopButton",
       "runtimeSupportsSecondaryOnlyAlert": runtimeSupportsSecondaryOnlyAlert
     ]
-    if alertActionMode == "openMissionOnly" {
+    if secondaryButton != nil {
       if #available(iOS 26.1, *) {
         return ExpoAlarmAlertPresentationResult(
           alert: AlarmPresentation.Alert(
