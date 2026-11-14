@@ -1517,27 +1517,27 @@ public class ExpoAlarmModule: Module {
 }
 
 private final class InvalidAlarmException: Exception {
-  private let message: String
+  private let detail: String
 
   override var reason: String {
-    message
+    detail
   }
 
   init(_ reason: String) {
-    self.message = reason
+    self.detail = reason
     super.init()
   }
 }
 
 private final class UnsupportedAlarmException: Exception {
-  private let message: String
+  private let detail: String
 
   override var reason: String {
-    message
+    detail
   }
 
   init(_ reason: String) {
-    self.message = reason
+    self.detail = reason
     super.init()
   }
 }
